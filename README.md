@@ -49,7 +49,7 @@ language commands.
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/<your-org>/ios-sim-plugin.git
+git clone https://github.com/norbertgrzenkowicz/ios-sim-plugin.git
 cd ios-sim-plugin
 
 # 2. Install the skill and CLI

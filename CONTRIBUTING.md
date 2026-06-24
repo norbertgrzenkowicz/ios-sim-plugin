@@ -10,7 +10,7 @@ This applies to everyone, including maintainers.
 ## 🛠️ Development Setup
 
 ```bash
-git clone https://github.com/<your-org>/ios-sim-plugin.git
+git clone https://github.com/norbertgrzenkowicz/ios-sim-plugin.git
 cd ios-sim-plugin
 
 # Make the CLI accessible
@@ -58,8 +58,8 @@ ios-sim ui tree
 
 ## ❓ Questions
 
-Open a [Discussion](https://github.com/<your-org>/ios-sim-plugin/discussions) or
-[Issue](https://github.com/<your-org>/ios-sim-plugin/issues).
+Open a [Discussion](https://github.com/norbertgrzenkowicz/ios-sim-plugin/discussions) or
+[Issue](https://github.com/norbertgrzenkowicz/ios-sim-plugin/issues).
 
 ## 📄 License
 

@@ -14,7 +14,7 @@ Accessibility API, CoreGraphics). If you find a security issue:
 
 1. **Do not** open a public GitHub issue
 2. Email the maintainer, or
-3. Open a [security advisory](https://github.com/<your-org>/ios-sim-plugin/security/advisories)
+3. Open a [security advisory](https://github.com/norbertgrzenkowicz/ios-sim-plugin/security/advisories)
 
 ## Scope
 
