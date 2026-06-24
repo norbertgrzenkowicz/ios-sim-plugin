@@ -1,0 +1,28 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "goal-runner": {
+      "steps": 200
+    }
+  },
+  "permission": {
+    "*": "allow",
+    "read": {
+      "*": "allow",
+      "*.env": "deny",
+      "*.env.*": "deny"
+    },
+    "edit": {
+      "*": "allow",
+      "*.env": "deny",
+      "*.env.*": "deny"
+    },
+    "bash": {
+      "*": "allow",
+      "sudo *": "deny"
+    },
+    "skill": {
+      "ios-sim": "allow"
+    }
+  }
+}

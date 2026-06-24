@@ -1,0 +1,39 @@
+# OS
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Build outputs
+bin/ax-helper
+bin/ios-sim
+*.pyc
+__pycache__/
+*.swiftmodule/
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# Dependencies
+node_modules/
+.packages/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Temp
+tmp/
+temp/
+*.tmp
+
+# Build artifacts
+*.o
+*.dylib
+
+# Screenshots taken during use
+screenshot*.png
+*.mp4
