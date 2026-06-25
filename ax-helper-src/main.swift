@@ -10,6 +10,7 @@
 import Foundation
 import ApplicationServices
 import AppKit
+import Vision
 
 // MARK: - AX Helpers
 
@@ -32,12 +33,16 @@ func getSimulatorMainWindow() -> AXUIElement? {
     return unsafeBitCast(window!, to: AXUIElement.self)
 }
 
-/// Get the iOS content area (the simulated device screen) from the window
+/// Get the iOS content area (the simulated device screen) from the window.
+/// First tries the standard `iOSContentGroup` subrole.
+/// Falls back to the largest child (by area) which is typically the device screen.
 func getIOSContentGroup() -> AXUIElement? {
     guard let window = getSimulatorMainWindow() else { return nil }
     var children: CFTypeRef?
     let err = AXUIElementCopyAttributeValue(window, "AXChildren" as CFString, &children)
     guard err == .success, let childArr = children as? [AXUIElement] else { return nil }
+    
+    // Primary: match by subrole
     for child in childArr {
         var subrole: CFTypeRef?
         AXUIElementCopyAttributeValue(child, "AXSubrole" as CFString, &subrole)
@@ -45,7 +50,31 @@ func getIOSContentGroup() -> AXUIElement? {
             return child
         }
     }
-    return nil
+    
+    // Fallback: find the largest child by area (heuristic: the device screen
+    // is the largest AX element inside the Simulator window)
+    var largestChild: AXUIElement?
+    var largestArea: Double = 0
+    for child in childArr {
+        var role: CFTypeRef?
+        AXUIElementCopyAttributeValue(child, "AXRole" as CFString, &role)
+        
+        var size: CFTypeRef?
+        if AXUIElementCopyAttributeValue(child, "AXSize" as CFString, &size) == .success,
+           let sizeVal = size {
+            var cgSize = CGSize.zero
+            AXValueGetValue(sizeVal as! AXValue, .cgSize, &cgSize)
+            let area = cgSize.width * cgSize.height
+            if area > largestArea {
+                // Skip likely UI elements (menu bars, toolbars — they're long and thin)
+                if cgSize.width > 100 && cgSize.height > 100 {
+                    largestArea = area
+                    largestChild = child
+                }
+            }
+        }
+    }
+    return largestChild
 }
 
 /// Recursively collect accessibility element info
@@ -144,30 +173,75 @@ func findElements(_ element: AXUIElement, role: String? = nil, label: String? = 
     return results
 }
 
+/// Estimate the chrome offset (title bar + border) of the Simulator.app window.
+/// Returns the difference between the main window's top-left corner and the
+/// content area's top-left corner in points.
+func detectChromeOffset() -> CGPoint {
+    guard let window = getSimulatorMainWindow() else { return .zero }
+    guard let content = getIOSContentGroup() else { return .zero }
+    
+    var winPos: CFTypeRef?
+    var conPos: CFTypeRef?
+    
+    let winOk = AXUIElementCopyAttributeValue(window, "AXPosition" as CFString, &winPos) == .success
+    let conOk = AXUIElementCopyAttributeValue(content, "AXPosition" as CFString, &conPos) == .success
+    
+    if winOk, conOk {
+        var winOrigin = CGPoint.zero
+        var conOrigin = CGPoint.zero
+        AXValueGetValue(winPos as! AXValue, .cgPoint, &winOrigin)
+        AXValueGetValue(conPos as! AXValue, .cgPoint, &conOrigin)
+        return CGPoint(x: conOrigin.x - winOrigin.x, y: conOrigin.y - winOrigin.y)
+    }
+    // Default chrome offset if AX doesn't cooperate (~19pt title bar + 1pt border)
+    return CGPoint(x: 1, y: 19)
+}
+
+/// Get the screen-space origin for tap/swipe coordinate translation.
+/// Uses the iOSContentGroup position if available, or the main window position
+/// plus estimated chrome offset.
+func getContentOrigin() -> CGPoint? {
+    // Prefer the content group directly
+    if let content = getIOSContentGroup() {
+        var pos: CFTypeRef?
+        if AXUIElementCopyAttributeValue(content, "AXPosition" as CFString, &pos) == .success,
+           let posVal = pos {
+            var origin = CGPoint.zero
+            AXValueGetValue(posVal as! AXValue, .cgPoint, &origin)
+            return origin
+        }
+    }
+    // Fallback: main window + chrome offset
+    if let window = getSimulatorMainWindow() {
+        var pos: CFTypeRef?
+        if AXUIElementCopyAttributeValue(window, "AXPosition" as CFString, &pos) == .success,
+           let posVal = pos {
+            var origin = CGPoint.zero
+            AXValueGetValue(posVal as! AXValue, .cgPoint, &origin)
+            let chrome = detectChromeOffset()
+            return CGPoint(x: origin.x + chrome.x, y: origin.y + chrome.y)
+        }
+    }
+    return nil
+}
+
+/// Convert a content-relative point to screen coordinates
+func contentToScreen(_ point: CGPoint) -> CGPoint? {
+    guard let origin = getContentOrigin() else { return nil }
+    return CGPoint(x: origin.x + point.x, y: origin.y + point.y)
+}
+
 /// Tap at a point (in simulator screen content coordinates, not window coords)
 func tapAtPoint(_ point: CGPoint) -> Bool {
-    let contentGroup = getIOSContentGroup()
-    guard let window = contentGroup ?? getSimulatorMainWindow() else { return false }
-    
-    var position: CFTypeRef?
-    let posErr = AXUIElementCopyAttributeValue(window, "AXPosition" as CFString, &position)
-    
-    guard posErr == .success, let posVal = position else { return false }
-    
-    var origin = CGPoint.zero
-    AXValueGetValue(posVal as! AXValue, .cgPoint, &origin)
-    
-    let screenX = origin.x + point.x
-    let screenY = origin.y + point.y
-    let clickPoint = CGPoint(x: screenX, y: screenY)
+    guard let screenPoint = contentToScreen(point) else { return false }
     
     // Mouse down
-    if let downEvent = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: clickPoint, mouseButton: .left) {
+    if let downEvent = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: screenPoint, mouseButton: .left) {
         downEvent.post(tap: .cghidEventTap)
     }
     Thread.sleep(forTimeInterval: 0.05)
     // Mouse up
-    if let upEvent = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: clickPoint, mouseButton: .left) {
+    if let upEvent = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: screenPoint, mouseButton: .left) {
         upEvent.post(tap: .cghidEventTap)
     }
     
@@ -176,19 +250,8 @@ func tapAtPoint(_ point: CGPoint) -> Bool {
 
 /// Perform a swipe/drag gesture
 func swipe(from: CGPoint, to: CGPoint, duration: Double = 0.2) -> Bool {
-    let contentGroup = getIOSContentGroup()
-    guard let window = contentGroup ?? getSimulatorMainWindow() else { return false }
-    
-    var position: CFTypeRef?
-    let posErr = AXUIElementCopyAttributeValue(window, "AXPosition" as CFString, &position)
-    
-    guard posErr == .success, let posVal = position else { return false }
-    
-    var origin = CGPoint.zero
-    AXValueGetValue(posVal as! AXValue, .cgPoint, &origin)
-    
-    let startPoint = CGPoint(x: origin.x + from.x, y: origin.y + from.y)
-    let endPoint = CGPoint(x: origin.x + to.x, y: origin.y + to.y)
+    guard let startPoint = contentToScreen(from),
+          let endPoint = contentToScreen(to) else { return false }
     
     // Mouse down
     if let downEvent = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: startPoint, mouseButton: .left) {
@@ -305,6 +368,127 @@ func waitForElement(label: String, timeout: Double = 5.0) -> [String: Any]? {
         Thread.sleep(forTimeInterval: 0.3)
     }
     return nil
+}
+
+// MARK: - Scale Detection
+
+/// Detect the content scale factor: screenshot pixels ÷ logical points
+/// Returns 1.0 if undetermined.
+func detectContentScale(screenshotWidth: Int, screenshotHeight: Int) -> Double {
+    // Prefer the AX content group size (in logical points)
+    if let content = getIOSContentGroup() {
+        var size: CFTypeRef?
+        if AXUIElementCopyAttributeValue(content, "AXSize" as CFString, &size) == .success,
+           let sizeVal = size {
+            var cgSize = CGSize.zero
+            AXValueGetValue(sizeVal as! AXValue, .cgSize, &cgSize)
+            if cgSize.width > 0 {
+                return Double(screenshotWidth) / cgSize.width
+            }
+        }
+    }
+    // Fallback: main window size minus chrome estimate
+    if let window = getSimulatorMainWindow() {
+        var size: CFTypeRef?
+        if AXUIElementCopyAttributeValue(window, "AXSize" as CFString, &size) == .success,
+           let sizeVal = size {
+            var cgSize = CGSize.zero
+            AXValueGetValue(sizeVal as! AXValue, .cgSize, &cgSize)
+            // The window includes chrome (~19pt title bar, ~1pt border each side)
+            let contentWidth = cgSize.width - 2  // approx chrome width
+            if contentWidth > 0 {
+                return Double(screenshotWidth) / contentWidth
+            }
+        }
+    }
+    // Last resort: common device scales
+    return 2.0
+}
+
+// MARK: - Vision OCR
+
+/// Take a screenshot and run OCR via Apple Vision framework.
+/// Returns an array of text region dicts with keys:
+///   text, confidence, x, y, width, height (in logical point coordinates)
+func ocrScreen() -> [[String: Any]] {
+    let tempPath = "/tmp/ax_ocr_\(UUID().uuidString).png"
+    defer { try? FileManager.default.removeItem(atPath: tempPath) }
+    
+    // Take screenshot via simctl
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+    process.arguments = ["simctl", "io", "booted", "screenshot", tempPath]
+    process.standardError = FileHandle.nullDevice
+    
+    do {
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            return [["error": "Screenshot failed", "text": ""]]
+        }
+        
+        guard let imageData = try? Data(contentsOf: URL(fileURLWithPath: tempPath)),
+              let dataProvider = CGDataProvider(data: imageData as CFData),
+              let cgImage = CGImage(pngDataProviderSource: dataProvider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else {
+            return [["error": "Could not load screenshot image", "text": ""]]
+        }
+        
+        let imgWidth = cgImage.width
+        let imgHeight = cgImage.height
+        let scale = detectContentScale(screenshotWidth: imgWidth, screenshotHeight: imgHeight)
+        
+        // Run Vision OCR synchronously
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        request.recognitionLanguages = ["en-US"]
+        
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        try handler.perform([request])
+        
+        guard let observations = request.results else {
+            return []
+        }
+        
+        var results: [[String: Any]] = []
+        for observation in observations {
+            // Get the top candidate (highest confidence text)
+            guard let topCandidate = observation.topCandidates(1).first else { continue }
+            let text = topCandidate.string
+            let confidence = Double(topCandidate.confidence)
+            
+            // Bounding box in normalized coordinates (0..1, bottom-left origin)
+            let bb = observation.boundingBox
+            // Convert to top-left origin, pixel coordinates
+            let pixelX = bb.minX * CGFloat(imgWidth)
+            let pixelY = (1.0 - bb.maxY) * CGFloat(imgHeight)  // top-left
+            let pixelW = bb.width * CGFloat(imgWidth)
+            let pixelH = bb.height * CGFloat(imgHeight)
+            
+            // Convert to logical point coordinates
+            let ptX = Double(pixelX) / scale
+            let ptY = Double(pixelY) / scale
+            let ptW = Double(pixelW) / scale
+            let ptH = Double(pixelH) / scale
+            
+            // Only include reasonably confident results (>= 0.3)
+            if confidence >= 0.3 {
+                results.append([
+                    "text": text,
+                    "confidence": confidence,
+                    "x": ptX,
+                    "y": ptY,
+                    "width": ptW,
+                    "height": ptH,
+                    "source": "ocr"
+                ])
+            }
+        }
+        
+        return results
+    } catch {
+        return [["error": "OCR failed: \(error.localizedDescription)", "text": ""]]
+    }
 }
 
 // MARK: - JSON Encoding Helpers
@@ -494,6 +678,47 @@ func main() {
         }
         let info = collectAXInfo(window, maxDepth: 2)
         response = ["success": true, "data": info]
+        
+    case "ocr":
+        let texts = ocrScreen()
+        let hasError = texts.first?["error"] != nil
+        response = ["success": !hasError, "data": ["texts": texts, "count": texts.count]]
+        if hasError { response["error"] = texts.first?["error"] ?? "OCR failed" }
+        
+    case "treex":
+        // Combined tree: AX first, fallback to OCR if empty
+        guard let app = getSimulatorApp() else {
+            response = ["success": false, "error": "Simulator not running"]
+            break
+        }
+        var axTree = collectAXInfo(app)
+        let hasAXChildren = {
+            if let children = axTree["children"] as? [[String: Any]], !children.isEmpty {
+                return true
+            }
+            // Check content group directly
+            if let content = getIOSContentGroup() {
+                let contentInfo = collectAXInfo(content, maxDepth: cmd.maxDepth ?? 4)
+                if let c = contentInfo["children"] as? [[String: Any]], !c.isEmpty {
+                    axTree = contentInfo
+                    return true
+                }
+            }
+            return false
+        }()
+        
+        if hasAXChildren {
+            response = ["success": true, "data": ["source": "ax", "tree": axTree]]
+        } else {
+            // Fallback to OCR
+            let texts = ocrScreen()
+            let hasError = texts.first?["error"] != nil
+            if hasError {
+                response = ["success": false, "error": "AX tree empty and OCR failed: \(texts.first?["error"] ?? "unknown")"]
+            } else {
+                response = ["success": true, "data": ["source": "ocr", "texts": texts, "count": texts.count]]
+            }
+        }
         
     default:
         response = ["success": false, "error": "Unknown action: \(cmd.action)"]

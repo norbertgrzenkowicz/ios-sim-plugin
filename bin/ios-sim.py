@@ -494,6 +494,13 @@ def cmd_ui_tap(args):
         print(result.stdout or result.stderr)
     else:
         x, y = float(args.x), float(args.y)
+        offset_x = float(getattr(args, 'offset_x', 0))
+        offset_y = float(getattr(args, 'offset_y', 0))
+        if offset_x != 0 or offset_y != 0:
+            x += offset_x
+            y += offset_y
+            if offset_y != 0:
+                print(f"ℹ️  Applying Y offset {offset_y} for chrome compensation", file=sys.stderr)
         result = run_ax("tap", x=x, y=y)
         if not result.get("success"):
             fail(f"Tap failed: {result.get('error')}")
@@ -564,25 +571,91 @@ def cmd_ui_wait(args):
 
 
 def cmd_ui_tree(args):
-    """Dump accessibility tree."""
+    """Dump accessibility tree. Falls back to OCR if AX tree is empty."""
     require_ax()
     depth = getattr(args, 'depth', 5)
-    result = run_ax("contentTree", maxDepth=depth)
+    force_ocr = getattr(args, 'ocr', False)
+    ax_only = getattr(args, 'ax_only', False)
+    
+    if force_ocr:
+        # OCR only
+        result = run_ax("ocr")
+        if not result.get("success"):
+            fail(f"OCR failed: {result.get('error')}")
+        data = result.get("data", {})
+        output_json({"source": "ocr", "texts": data.get("texts", []), "count": data.get("count", 0)})
+        if data.get("count", 0) == 0:
+            print("⚠️  No text detected on screen", file=sys.stderr)
+        return
+    
+    if ax_only:
+        # AX only, no fallback
+        result = run_ax("contentTree", maxDepth=depth)
+        if not result.get("success"):
+            fail(f"Tree failed: {result.get('error')}")
+        output_json({"source": "ax", "tree": result.get("data", {})})
+        return
+    
+    # Default: combined AX + OCR fallback
+    result = run_ax("treex", maxDepth=depth)
     if not result.get("success"):
         fail(f"Tree failed: {result.get('error')}")
-    output_json(result.get("data", {}))
+    data = result.get("data", {})
+    source = data.get("source", "unknown")
+    
+    if source == "ocr":
+        texts = data.get("texts", [])
+        output_json({"source": "ocr", "texts": texts, "count": len(texts)})
+        print(f"ℹ️  AX tree was empty — showing OCR text regions ({len(texts)} found)", file=sys.stderr)
+        if len(texts) == 0:
+            print("⚠️  No text detected on screen. Try a screenshot instead.", file=sys.stderr)
+    else:
+        output_json({"source": "ax", "tree": data.get("tree", {})})
 
 
 def cmd_ui_find(args):
-    """Find elements by label."""
+    """Find elements by label. Falls back to OCR text search if AX finds nothing."""
     require_ax()
+    force_ocr = getattr(args, 'ocr', False)
+    ax_only = getattr(args, 'ax_only', False)
+    
+    if force_ocr:
+        # OCR-only find
+        result = run_ax("ocr")
+        if not result.get("success"):
+            fail(f"OCR failed: {result.get('error')}")
+        texts = result.get("data", {}).get("texts", [])
+        matches = [t for t in texts if args.label.lower() in t.get("text", "").lower()]
+        output_json({"source": "ocr", "matches": matches, "count": len(matches), "query": args.label})
+        if len(matches) == 0:
+            print(f"⚠️  No text matching '{args.label}' found via OCR", file=sys.stderr)
+        return
+    
+    # AX find
     result = run_ax("find", label=args.label)
     if not result.get("success"):
         fail(f"Find failed: {result.get('error')}")
     data = result.get("data", {})
-    output_json(data)
-    if data.get("count", 0) == 0:
-        print(f"⚠️  No elements found matching '{args.label}'", file=sys.stderr)
+    ax_count = data.get("count", 0)
+    
+    if ax_count > 0 or ax_only:
+        output_json(data)
+        if ax_count == 0:
+            print(f"⚠️  No elements found matching '{args.label}'", file=sys.stderr)
+        return
+    
+    # AX found nothing → fallback to OCR
+    print(f"ℹ️  AX find returned 0 matches — falling back to OCR text search for '{args.label}'", file=sys.stderr)
+    result = run_ax("ocr")
+    if not result.get("success"):
+        fail(f"OCR failed: {result.get('error')}")
+    texts = result.get("data", {}).get("texts", [])
+    matches = [t for t in texts if args.label.lower() in t.get("text", "").lower()]
+    output_json({"source": "ocr", "matches": matches, "count": len(matches), "query": args.label, "ax_fallback_reason": "AX tree empty (Flutter app with disabled semantics?)"})
+    if len(matches) == 0:
+        print(f"⚠️  No text matching '{args.label}' found via OCR either", file=sys.stderr)
+    else:
+        print(f"✅ Found {len(matches)} text match(es) via OCR", file=sys.stderr)
 
 
 def cmd_ui_long_press(args):
@@ -883,6 +956,8 @@ def main():
     p_tap = sp.add_parser("tap", help="Tap at coordinates or element")
     p_tap.add_argument("x", type=float, help="X coordinate")
     p_tap.add_argument("y", type=float, help="Y coordinate")
+    p_tap.add_argument("--offset-x", type=float, default=0, help="X offset adjustment (for chrome compensation)")
+    p_tap.add_argument("--offset-y", type=float, default=0, help="Y offset adjustment (for chrome compensation)")
     p_tap.set_defaults(func=cmd_ui_tap, element_ref=None)
 
     p_type = sp.add_parser("type", help="Type text")
@@ -896,11 +971,15 @@ def main():
     p_swipe.add_argument("y2", type=float)
     p_swipe.set_defaults(func=cmd_ui_swipe, element_ref=None)
 
-    p_tree = sp.add_parser("tree", help="Dump accessibility tree")
+    p_tree = sp.add_parser("tree", help="Dump accessibility tree (auto-fallback to OCR when AX empty)")
     p_tree.add_argument("--depth", type=int, default=5, help="Max depth (default: 5)")
+    p_tree.add_argument("--ax-only", action="store_true", help="Skip OCR fallback, return raw AX tree only")
+    p_tree.add_argument("--ocr", action="store_true", help="Force OCR mode (skip AX entirely)")
     p_tree.set_defaults(func=cmd_ui_tree)
-    p_find = sp.add_parser("find", help="Find elements by label")
+    p_find = sp.add_parser("find", help="Find elements by label (auto-fallback to OCR text search)")
     p_find.add_argument("label")
+    p_find.add_argument("--ax-only", action="store_true", help="Skip OCR fallback, return raw AX results only")
+    p_find.add_argument("--ocr", action="store_true", help="Force OCR mode (skip AX entirely)")
     p_find.set_defaults(func=cmd_ui_find)
 
     p_wait = sp.add_parser("wait", help="Wait for element")

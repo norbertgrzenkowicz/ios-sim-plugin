@@ -19,6 +19,7 @@ language commands.
 | Screenshots + video recording | ✅ |
 | UI interaction: tap, type, swipe, long-press, drag | ✅ |
 | Accessibility tree dump + element search | ✅ |
+| OCR text detection (Vision fallback for Flutter apps) | ✅ |
 | Hardware buttons (home, volume, lock, Siri) | ✅ |
 | Gesture presets (shake, rotate) | ✅ |
 | Deep links | ✅ |

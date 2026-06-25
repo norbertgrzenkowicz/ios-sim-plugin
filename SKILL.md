@@ -56,13 +56,25 @@ The following workflows describe how to accomplish common tasks.
    read <path_from_output>  ← view the image inline like Codex does
    ```
 
-   **If you don't have vision** (DeepSeek, etc.):
-   ```
-   ios-sim ui tree     ← get text-based accessibility hierarchy with coordinates
-   ios-sim ui find "Login"  ← find specific elements by label
-   ```
-   The AX tree is often MORE useful than a screenshot because it gives exact
-   coordinates for tapping.
+    **If you don't have vision** (DeepSeek, etc.):
+    ```
+    ios-sim ui tree     ← get text-based accessibility hierarchy with coordinates
+    ios-sim ui find "Login"  ← find specific elements by label
+    ```
+    The AX tree is often MORE useful than a screenshot because it gives exact
+    coordinates for tapping.
+
+    **⚠️ Flutter apps**: Flutter doesn't expose its widget tree to the iOS
+    Accessibility API unless `SemanticsBinding.instance.ensureSemantics()` is
+    called in the Dart code. For Flutter apps, `ui tree` and `ui find`
+    **automatically fall back to OCR** (Vision text recognition) when the AX
+    tree is empty. OCR returns text regions with coordinates you can tap on.
+    If you know the app is Flutter, you can also force OCR mode:
+    ```
+    ios-sim ui tree --ocr     ← force OCR mode (skip AX)
+    ios-sim ui tree --ax-only ← see the raw (empty) AX tree for debugging
+    ios-sim ui find "Login" --ocr  ← force OCR-based text search
+    ```
 
 6. **Interact** using coordinates from the tree:
    ```
@@ -183,10 +195,10 @@ ios-sim ui find "Login"   ← Find specific elements
 | Command | Codex Eq | Description |
 |---------|---------|-------------|
 | `ios-sim ui snapshot` | ✅ | Take UI snapshot (accessibility) |
-| `ios-sim ui tree` | ✅ | Dump accessibility hierarchy |
-| `ios-sim ui find <label>` | ✅ | Search by label/description |
+| `ios-sim ui tree [--ocr\|--ax-only]` | ✅+ | Dump accessibility hierarchy (auto-fallback to OCR) |
+| `ios-sim ui find <label> [--ocr\|--ax-only]` | ✅+ | Search by label/description (auto-fallback to OCR) |
 | `ios-sim ui wait <selector>` | ✅ | Wait for element |
-| `ios-sim ui tap <x> <y>` | ✅ | Tap at coordinates |
+| `ios-sim ui tap <x> <y> [--offset-x\|--offset-y]` | ✅ | Tap at coordinates |
 | `ios-sim ui type <text>` | ✅ | Type text |
 | `ios-sim ui swipe <x1> <y1> <x2> <y2>` | ✅ | Swipe gesture |
 | `ios-sim ui button <btn>` | ✅ | Hardware button (home/vol/lock/siri) |
